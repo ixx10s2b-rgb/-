@@ -55,6 +55,8 @@ Firebase設定を入れると、企画文、登録した歯イラスト、作成
 
 クラウド保存の設定手順は [docs/firebase-setup.md](docs/firebase-setup.md) を見てください。
 
+メンバー全員にURL共有して使う公開手順は [docs/team-sharing.md](docs/team-sharing.md) を見てください。
+
 GitHubに接続しておくと、アプリ本体やクライアント別テンプレートの変更履歴を残せます。設定手順は [docs/github-backup.md](docs/github-backup.md) を見てください。
 
 ## Canvaでの編集
