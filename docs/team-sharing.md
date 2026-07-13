@@ -14,7 +14,7 @@ Firebase Hosting
 メンバー全員がブラウザで利用
 ```
 
-保存データはFirebaseのFirestoreとStorageに入ります。アプリ本体はGitHubに保存され、公開URLはFirebase Hostingから配信されます。
+保存データは主にFirebaseのFirestoreに入ります。Storageを有効にできる場合は画像素材をStorageにも保存しますが、Storageを使わなくてもURL共有と基本的な共同利用はできます。アプリ本体はGitHubに保存され、公開URLはFirebase Hostingから配信されます。
 
 ## 1. Firebaseで有効化するもの
 
@@ -22,10 +22,11 @@ Firebase Consoleで以下を有効にします。
 
 - Authentication
 - Firestore Database
-- Storage
 - Hosting
 
 Authenticationはまず匿名ログインで運用できます。メンバー別に権限を分けたい場合は、あとからGoogleログインやメールログインに変更できます。
+
+Storageは任意です。無料プランで有効化できない場合は、いったんスキップして大丈夫です。登録した歯イラストはFirestore側に保存されます。画像がかなり大きい場合だけ、あとからStorageを有効化すると安定します。
 
 ## 2. GitHubに登録するSecrets
 

@@ -181,9 +181,16 @@ export const saveArtworkToCloud = async (clientKey, artwork) => {
   const extension = dataUrlToExtension(artwork.dataUrl);
   const storagePath = `teams/${CLOUD_TEAM_ID}/clients/${clientKey}/artworks/${artwork.id}.${extension}`;
   const storageRef = ref(services.storage, storagePath);
+  let downloadUrl = '';
+  let savedStoragePath = '';
 
-  await uploadString(storageRef, artwork.dataUrl, 'data_url');
-  const downloadUrl = await getDownloadURL(storageRef);
+  try {
+    await uploadString(storageRef, artwork.dataUrl, 'data_url');
+    downloadUrl = await getDownloadURL(storageRef);
+    savedStoragePath = storagePath;
+  } catch (error) {
+    console.warn('Storageが使えないため、Firestoreにイラストを保存します。', error);
+  }
 
   await setDoc(
     doc(services.db, ...clientDocPath(clientKey, 'artworks', artwork.id)),
@@ -191,8 +198,9 @@ export const saveArtworkToCloud = async (clientKey, artwork) => {
       id: artwork.id,
       name: artwork.name,
       type: artwork.type || (await dataUrlToBlob(artwork.dataUrl)).type || 'image/png',
-      storagePath,
+      storagePath: savedStoragePath,
       downloadUrl,
+      dataUrl: downloadUrl ? '' : artwork.dataUrl,
       updatedAt: serverTimestamp()
     },
     { merge: true }
@@ -201,7 +209,13 @@ export const saveArtworkToCloud = async (clientKey, artwork) => {
 
 export const saveArtworksToCloud = async (clientKey, artworks) => {
   if (!isCloudConfigured() || !Array.isArray(artworks)) return;
-  await Promise.all(artworks.map((artwork) => saveArtworkToCloud(clientKey, artwork)));
+  await Promise.all(
+    artworks.map((artwork) =>
+      saveArtworkToCloud(clientKey, artwork).catch((error) => {
+        console.warn(`${artwork?.name || artwork?.id || 'イラスト'}をクラウド保存できませんでした。`, error);
+      })
+    )
+  );
 };
 
 export const deleteArtworkFromCloud = async (clientKey, artwork) => {
