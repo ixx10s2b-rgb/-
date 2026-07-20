@@ -13,6 +13,8 @@ import {
 import { deleteObject, getDownloadURL, getStorage, ref, uploadString } from 'firebase/storage';
 
 const CLOUD_TEAM_ID = import.meta.env.VITE_TEAM_ID || 'default';
+const FIRESTORE_INLINE_DATA_URL_LIMIT = 850000;
+const FIRESTORE_CHUNK_SIZE = 700000;
 
 let firebaseApp = null;
 let firebaseServices = null;
@@ -99,6 +101,8 @@ const dataUrlToExtension = (dataUrl = '') => {
   return 'png';
 };
 
+const dataUrlToMimeType = (dataUrl = '') => dataUrl.match(/^data:([^;]+);/)?.[1] || 'image/png';
+
 const dataUrlToBlob = async (dataUrl) => {
   const response = await fetch(dataUrl);
   return response.blob();
@@ -116,6 +120,41 @@ const fetchDataUrl = async (url) => {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`画像を取得できませんでした: ${response.status}`);
   return blobToDataUrl(await response.blob());
+};
+
+const artworkChunksCollection = (services, clientKey, artworkId) =>
+  collection(services.db, ...clientDocPath(clientKey, 'artworks', artworkId), 'chunks');
+
+const loadArtworkChunks = async (services, clientKey, artworkId, chunkCount = 0) => {
+  const snapshot = await getDocs(artworkChunksCollection(services, clientKey, artworkId));
+  const chunks = snapshot.docs
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, chunkCount || undefined)
+    .map((chunkDoc) => chunkDoc.data()?.value || '');
+  return chunks.join('');
+};
+
+const clearArtworkChunks = async (services, clientKey, artworkId) => {
+  const snapshot = await getDocs(artworkChunksCollection(services, clientKey, artworkId));
+  await Promise.all(snapshot.docs.map((chunkDoc) => deleteDoc(chunkDoc.ref)));
+};
+
+const saveArtworkChunks = async (services, clientKey, artworkId, dataUrl) => {
+  await clearArtworkChunks(services, clientKey, artworkId);
+  const chunks = [];
+  for (let index = 0; index < dataUrl.length; index += FIRESTORE_CHUNK_SIZE) {
+    chunks.push(dataUrl.slice(index, index + FIRESTORE_CHUNK_SIZE));
+  }
+
+  await Promise.all(
+    chunks.map((value, index) =>
+      setDoc(doc(services.db, ...clientDocPath(clientKey, 'artworks', artworkId), 'chunks', String(index).padStart(4, '0')), {
+        value,
+        index
+      })
+    )
+  );
+  return chunks.length;
 };
 
 export const loadClientDraftFromCloud = async (clientKey) => {
@@ -161,6 +200,14 @@ export const loadArtworksFromCloud = async (clientKey) => {
         }
       }
 
+      if (!dataUrl && data.chunkCount) {
+        try {
+          dataUrl = await loadArtworkChunks(services, clientKey, itemDoc.id, data.chunkCount);
+        } catch (error) {
+          console.warn(`${data.name || itemDoc.id}の分割保存データを読み込めませんでした。`, error);
+        }
+      }
+
       return {
         id: data.id || itemDoc.id,
         name: data.name || itemDoc.id,
@@ -183,6 +230,8 @@ export const saveArtworkToCloud = async (clientKey, artwork) => {
   const storageRef = ref(services.storage, storagePath);
   let downloadUrl = '';
   let savedStoragePath = '';
+  let inlineDataUrl = '';
+  let chunkCount = 0;
 
   try {
     await uploadString(storageRef, artwork.dataUrl, 'data_url');
@@ -192,15 +241,25 @@ export const saveArtworkToCloud = async (clientKey, artwork) => {
     console.warn('Storageが使えないため、Firestoreにイラストを保存します。', error);
   }
 
+  if (downloadUrl) {
+    await clearArtworkChunks(services, clientKey, artwork.id);
+  } else if (artwork.dataUrl.length > FIRESTORE_INLINE_DATA_URL_LIMIT) {
+    chunkCount = await saveArtworkChunks(services, clientKey, artwork.id, artwork.dataUrl);
+  } else {
+    inlineDataUrl = artwork.dataUrl;
+    await clearArtworkChunks(services, clientKey, artwork.id);
+  }
+
   await setDoc(
     doc(services.db, ...clientDocPath(clientKey, 'artworks', artwork.id)),
     {
       id: artwork.id,
       name: artwork.name,
-      type: artwork.type || (await dataUrlToBlob(artwork.dataUrl)).type || 'image/png',
+      type: artwork.type || dataUrlToMimeType(artwork.dataUrl) || (await dataUrlToBlob(artwork.dataUrl)).type || 'image/png',
       storagePath: savedStoragePath,
       downloadUrl,
-      dataUrl: downloadUrl ? '' : artwork.dataUrl,
+      dataUrl: inlineDataUrl,
+      chunkCount,
       updatedAt: serverTimestamp()
     },
     { merge: true }
@@ -227,6 +286,9 @@ export const deleteArtworkFromCloud = async (clientKey, artwork) => {
   const snapshot = await getDoc(artworkDoc);
   const storagePath = snapshot.exists() ? snapshot.data()?.storagePath : null;
 
+  await clearArtworkChunks(services, clientKey, artwork.id).catch((error) => {
+    console.warn('Firestore上の分割イラストを削除できませんでした。', error);
+  });
   await deleteDoc(artworkDoc);
   if (storagePath) {
     await deleteObject(ref(services.storage, storagePath)).catch((error) => {

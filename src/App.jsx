@@ -9,7 +9,8 @@ import {
   Palette,
   Shuffle,
   Sparkles,
-  Trash2
+  Trash2,
+  Upload
 } from 'lucide-react';
 import {
   deleteArtworkFromCloud,
@@ -1398,7 +1399,12 @@ const parseStorageJson = (value, fallback) => {
 const mergeArtworksById = (...groups) => {
   const artworkMap = new Map();
   groups.flat().filter(Boolean).forEach((item) => {
-    if (item?.id && !artworkMap.has(item.id)) {
+    if (!item?.id) return;
+    const existing = artworkMap.get(item.id);
+    const itemHasImage = typeof item.dataUrl === 'string' && item.dataUrl.startsWith('data:image/');
+    const existingHasImage = typeof existing?.dataUrl === 'string' && existing.dataUrl.startsWith('data:image/');
+
+    if (!existing || (!existingHasImage && itemHasImage)) {
       artworkMap.set(item.id, item);
     }
   });
@@ -1430,11 +1436,11 @@ const loadArtworks = (clientKey = 'inoue') => {
       clientKey === 'inoue' ? parseStorageJson(window.localStorage.getItem(ARTWORK_STORAGE_KEY), null) : null;
     const backup = loadArtworkBackup();
     const backupItems = Array.isArray(backup[clientKey]) ? backup[clientKey] : [];
-    const savedItems = Array.isArray(namespaced) && namespaced.length ? namespaced : null;
-    const legacyItems = Array.isArray(legacy) && legacy.length ? legacy : null;
-    const items = savedItems || legacyItems || backupItems;
+    const savedItems = Array.isArray(namespaced) ? namespaced : [];
+    const legacyItems = Array.isArray(legacy) ? legacy : [];
+    const items = mergeArtworksById(savedItems, legacyItems, backupItems);
     rememberArtworkBackup(clientKey, items);
-    return Array.isArray(items) ? items : [];
+    return items;
   } catch (error) {
     console.error(error);
     return [];
@@ -1462,9 +1468,11 @@ const saveArtworks = (items, clientKey = 'inoue', options = {}) => {
   } catch (error) {
     console.warn('localStorageにイラストのバックアップを保存できませんでした。', error);
   }
-  replaceArtworksInIndexedDb(clientKey, nextItems).catch((error) => {
-    console.warn('IndexedDBにイラストを保存できませんでした。', error);
-  });
+  if (nextItems.length || options.allowEmpty) {
+    replaceArtworksInIndexedDb(clientKey, nextItems).catch((error) => {
+      console.warn('IndexedDBにイラストを保存できませんでした。', error);
+    });
+  }
 };
 
 const draftStorageKey = (clientKey) => `${DRAFT_STORAGE_KEY}:${clientKey}`;
@@ -2839,8 +2847,12 @@ const App = () => {
     setHasCloudHydrated(false);
     setCloudMode('connecting');
 
-    Promise.all([loadClientDraftFromCloud(clientKey), loadArtworksFromCloud(clientKey)])
-      .then(([cloudDraft, cloudArtworks]) => {
+    Promise.all([
+      loadClientDraftFromCloud(clientKey),
+      loadArtworksFromCloud(clientKey),
+      loadArtworksFromIndexedDb(clientKey).catch(() => [])
+    ])
+      .then(([cloudDraft, cloudArtworks, indexedArtworks]) => {
         if (!isCurrent) return;
 
         if (cloudDraft) {
@@ -2848,12 +2860,25 @@ const App = () => {
           saveClientDraft(clientKey, cloudDraft);
         }
 
-        if (cloudArtworks.length) {
+        const localArtworks = loadArtworks(clientKey);
+        const mergedArtworks = mergeArtworksById(localArtworks, indexedArtworks, cloudArtworks);
+
+        if (mergedArtworks.length) {
           setArtworks((current) => {
-            const nextArtworks = mergeArtworksById(current, cloudArtworks);
+            const nextArtworks = mergeArtworksById(current, mergedArtworks);
             saveArtworks(nextArtworks, clientKey);
             return nextArtworks;
           });
+
+          const cloudArtworkIds = new Set(cloudArtworks.map((artwork) => artwork.id));
+          const artworksMissingInCloud = mergedArtworks.filter(
+            (artwork) => artwork?.dataUrl && !cloudArtworkIds.has(artwork.id)
+          );
+          if (artworksMissingInCloud.length) {
+            saveArtworksToCloud(clientKey, artworksMissingInCloud).catch((error) => {
+              console.warn('ローカル素材をクラウドへ同期できませんでした。', error);
+            });
+          }
         }
 
         setCloudMode('ready');
@@ -3132,6 +3157,71 @@ const App = () => {
     } catch (error) {
       console.error(error);
       showStatus('イラストを整えられませんでした');
+    }
+  };
+
+  const exportArtworkBackup = async () => {
+    const clientBackups = {};
+
+    await Promise.all(
+      clientOrder.map(async (key) => {
+        const localItems = loadArtworks(key);
+        const indexedItems = await loadArtworksFromIndexedDb(key).catch(() => []);
+        const mergedItems = mergeArtworksById(localItems, indexedItems);
+        if (mergedItems.length) clientBackups[key] = mergedItems;
+      })
+    );
+
+    if (!Object.keys(clientBackups).length) {
+      showStatus('書き出せる素材がありません');
+      return;
+    }
+
+    const exportedAt = new Date().toISOString();
+    downloadBlob(
+      JSON.stringify({ version: 1, exportedAt, clients: clientBackups }, null, 2),
+      `story-tooth-artworks-backup-${exportedAt.slice(0, 10)}.json`,
+      'application/json;charset=utf-8'
+    );
+    showStatus('歯イラスト素材のバックアップを書き出しました');
+  };
+
+  const importArtworkBackup = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const backup = JSON.parse(await file.text());
+      const backupClients =
+        backup?.clients && typeof backup.clients === 'object'
+          ? backup.clients
+          : { [clientKey]: Array.isArray(backup?.artworks) ? backup.artworks : [] };
+      let importedCount = 0;
+
+      for (const [key, items] of Object.entries(backupClients)) {
+        if (!clients[key] || !Array.isArray(items) || !items.length) continue;
+
+        const currentLocalItems = loadArtworks(key);
+        const currentIndexedItems = await loadArtworksFromIndexedDb(key).catch(() => []);
+        const currentItems = mergeArtworksById(currentLocalItems, currentIndexedItems);
+        const mergedItems = mergeArtworksById(currentItems, items);
+        importedCount += Math.max(0, mergedItems.length - currentItems.length);
+        saveArtworks(mergedItems, key);
+
+        if (isCloudConfigured()) {
+          saveArtworksToCloud(key, mergedItems).catch((error) => {
+            console.warn(`${clients[key].name}の素材をクラウドへ保存できませんでした。`, error);
+          });
+        }
+
+        if (key === clientKey) setArtworks(mergedItems);
+      }
+
+      showStatus(importedCount ? `${importedCount}件の素材を読み込みました` : '素材バックアップを読み込みました');
+    } catch (error) {
+      console.error(error);
+      showStatus('素材バックアップを読み込めませんでした');
     }
   };
 
@@ -3495,6 +3585,22 @@ const App = () => {
               <Sparkles size={16} />
               登録済み素材を透過・サイズ調整
             </button>
+
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={exportArtworkBackup}
+                className="flex items-center justify-center gap-2 rounded-md border border-[#d8d1c7] bg-white px-3 py-2.5 text-xs font-bold text-[#4f4f4f]"
+              >
+                <Download size={15} />
+                素材バックアップ
+              </button>
+              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-[#d8d1c7] bg-white px-3 py-2.5 text-xs font-bold text-[#4f4f4f]">
+                <Upload size={15} />
+                バックアップ読込
+                <input type="file" accept="application/json,.json" onChange={importArtworkBackup} className="hidden" />
+              </label>
+            </div>
 
             {artworks.length > 0 && (
               <div className="mb-3 rounded-md border border-[#ebe4d9] bg-[#fffdf8] p-3">
