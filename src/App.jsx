@@ -31,29 +31,33 @@ const ARTWORK_BACKUP_STORAGE_KEY = `${ARTWORK_STORAGE_KEY}:client-backup`;
 const ARTWORK_DB_NAME = 'story-generator-artworks';
 const ARTWORK_DB_STORE = 'artworks';
 const DRAFT_STORAGE_KEY = 'story-generator:client-draft';
-const KUMATA_BACKGROUND_PATH = '/assets/kumata-story-background.png';
-const KUMATA_CLINIC_PHOTO_PATH = '/assets/kumata-clinic-photo.png';
-const YAMAMOTO_BACKGROUND_PATH = '/assets/yamamoto-story-background.png';
-const YAMAMOTO_CLINIC_PHOTO_PATH = '/assets/yamamoto-clinic-photo.png';
-const NISHIUMI_BACKGROUND_PATH = '/assets/nishiumi-story-background.png?v=202606211820';
-const NISHIUMI_DOCTOR_PHOTO_PATH = '/assets/nishiumi-doctor-photo.png?v=202606211835';
-const KANOU_BACKGROUND_PATH = '/assets/kanou-story-background.png?v=202607023';
+const ASSET_VERSION = '202607202300';
+const KUMATA_BACKGROUND_PATH = `/assets/kumata-story-background.png?v=${ASSET_VERSION}`;
+const KUMATA_CLINIC_PHOTO_PATH = `/assets/kumata-clinic-photo.png?v=${ASSET_VERSION}`;
+const YAMAMOTO_BACKGROUND_PATH = `/assets/yamamoto-story-background.png?v=${ASSET_VERSION}`;
+const YAMAMOTO_CLINIC_PHOTO_PATH = `/assets/yamamoto-clinic-photo.png?v=${ASSET_VERSION}`;
+const NISHIUMI_BACKGROUND_PATH = `/assets/nishiumi-story-background.png?v=${ASSET_VERSION}`;
+const NISHIUMI_DOCTOR_PHOTO_PATH = `/assets/nishiumi-doctor-photo.png?v=${ASSET_VERSION}`;
+const KANOU_BACKGROUND_PATH = `/assets/kanou-story-background.png?v=${ASSET_VERSION}`;
 const KANOU_STAFF_PHOTO_PATHS = [
-  '/assets/kanou-staff-photo-1.png',
-  '/assets/kanou-staff-photo-2.png'
+  `/assets/kanou-staff-photo-1.png?v=${ASSET_VERSION}`,
+  `/assets/kanou-staff-photo-2.png?v=${ASSET_VERSION}`
 ];
 const INOUE_CLINIC_PHOTO_PATHS = [
-  '/assets/inoue-clinic-photo-1.png',
-  '/assets/inoue-clinic-photo-2.png'
+  `/assets/inoue-clinic-photo-1.png?v=${ASSET_VERSION}`,
+  `/assets/inoue-clinic-photo-2.png?v=${ASSET_VERSION}`
 ];
 const OSAKA_SAYAMA_CLINIC_PHOTO_PATHS = [
-  '/assets/osaka-sayama-clinic-photo-1.png',
-  '/assets/osaka-sayama-clinic-photo-2.png'
+  `/assets/osaka-sayama-clinic-photo-1.png?v=${ASSET_VERSION}`,
+  `/assets/osaka-sayama-clinic-photo-2.png?v=${ASSET_VERSION}`
 ];
 
 const assetHref = (path) => {
-  if (typeof window === 'undefined') return path;
-  return `${window.location.origin}${path}`;
+  if (/^(data:|https?:\/\/)/.test(path)) return path;
+  const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
+  const basePath = import.meta.env.BASE_URL || '/';
+  if (typeof window === 'undefined') return `${basePath}${normalizedPath}`;
+  return new URL(normalizedPath, `${window.location.origin}${basePath}`).href;
 };
 
 const sampleBrief = `【1ページ目】
@@ -1927,7 +1931,10 @@ const downloadReadyBlob = (blob, filename) => {
 const svgToDataUrl = (svg) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
 const imagePathToDataUrl = async (path) => {
-  const response = await fetch(path);
+  const response = await fetch(assetHref(path));
+  if (!response.ok) {
+    throw new Error(`画像素材を読み込めませんでした: ${path}`);
+  }
   const blob = await response.blob();
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
